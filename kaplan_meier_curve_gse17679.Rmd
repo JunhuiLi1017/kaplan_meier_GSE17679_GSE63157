@@ -1,0 +1,201 @@
+---
+title: "R2_dataset_kaplan_meier_curve"
+author: "JunhuiLi"
+date: "2023-04-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Kaplan meier curve for 3 dataset
+
+We made kaplan meier curve for overall time - status ~ C1GALT1 and eventfree - status ~  C1GALT1 based 3 dataset(GSE17679, GSE63157_core_exon and GSE63157_core_transcript). 
+
+we compared if there is a difference in eventfree or overall between two groups with C1GALT1 expression high and low. The cutoff methods grouping samples into high and low includes scan, median, average, first_quartile, last_quartile, last_vs_firt_quartile and curtain.
+
+Note that the p value from survfit in R is different from R2 platform.
+
+```{r}
+library(survminer)
+library(survival)
+library(ggplot2)
+library(patchwork)
+```
+
+## For dataset gse17679
+
+prepare the input raw dataset
+```{r}
+gse17679_raw <- read.table("result/gse17679/gse17679.txt",comment.char = "")
+gse17679_raw[1:15,1:5]
+
+gse17679_C1GALT1 <- gse17679_raw[c(1:10,which(gse17679_raw[,1] %in% c("C1GALT1","SMO","GLI1"))),]
+gse17679 <- as.data.frame(t(gse17679_C1GALT1))
+gse17679[1:5,]
+colnames(gse17679) <- c("hugo","age","efs","id","overall","sample_series_id","set","sex","state","status","C1GALT1","GLI1","SMO")
+
+dat <- gse17679[-c(1:2),]
+dat[1:5,]
+dim(dat)
+
+dat_remove_nd <- dat[!dat$efs %in% "nd",]
+
+dat_remove_nd$age <- as.numeric(dat_remove_nd$age)
+dat_remove_nd$efs <- as.numeric(dat_remove_nd$efs)
+dat_remove_nd$overall <- as.numeric(dat_remove_nd$overall)
+dat_remove_nd$C1GALT1_value <- as.numeric(dat_remove_nd$C1GALT1)
+str(dat_remove_nd)
+dat_remove_nd_sort <- dat_remove_nd[order(dat_remove_nd$C1GALT1_value, decreasing = FALSE),]
+dat_remove_nd_sort$id <- 1:nrow(dat_remove_nd_sort)
+dat_remove_nd_sort$Event[dat_remove_nd_sort$status=="dead"] <- "YES"
+dat_remove_nd_sort$Event[dat_remove_nd_sort$status!="dead"] <- "NO"
+dat_remove_nd_sort$Event <- as.factor(dat_remove_nd_sort$Event)
+dat_remove_nd_sort$status
+head(dat_remove_nd_sort)
+str(dat_remove_nd_sort)
+```
+correlation plot
+```{r}
+dat[1:5,]
+dat_corr <- dat
+dat_corr$C1GALT1 <- as.numeric(dat_corr$C1GALT1)
+dat_corr$C1GALT1_log2 <- log2(dat_corr$C1GALT1)
+summary(dat_corr$C1GALT1)
+dat_corr$GLI1 <- as.numeric(dat_corr$GLI1)
+dat_corr$GLI1_log2 <- log2(dat_corr$GLI1)
+summary(dat_corr$GLI1)
+dat_corr$SMO <- as.numeric(dat_corr$SMO)
+dat_corr$SMO_log2 <- log2(dat_corr$SMO)
+summary(dat_corr$SMO)
+str(dat_corr)
+
+
+pc1 <- ggplot(data=dat_corr,aes(x=C1GALT1_log2,y=GLI1_log2))+
+  geom_point()+
+  theme_classic2()+
+  stat_cor(method = "pearson", label.y = max(dat_corr$GLI1_log2)+1)
+
+pc2 <- ggplot(data=dat_corr,aes(x=C1GALT1_log2,y=SMO_log2))+
+  geom_point()+
+  theme_classic2()+
+  stat_cor(method = "pearson", label.y = max(dat_corr$SMO_log2)+1)
+
+pdf(paste0("result/gse17679/correlation/gse17679_C1GALT1_GLI1_correlation.pdf"))
+    print(pc1)
+dev.off()
+pdf(paste0("result/gse17679/correlation/gse17679_C1GALT1_SMO_correlation.pdf"))
+    print(pc2)
+dev.off()
+# install.packages("PerformanceAnalytics")
+library(PerformanceAnalytics)
+dat_corr_gene <- dat_corr[,c("C1GALT1_log2","GLI1_log2","SMO_log2")]
+pdf(paste0("result/gse17679/correlation/gse17679_C1GALT1_GLI1_SMO_correlation.pdf"))
+    chart.Correlation(dat_corr_gene, histogram = TRUE, method = "pearson")
+dev.off()
+```
+
+
+
+go through all cutoff methods.
+```{r}
+## scan threshold
+cutoff <- list()
+cutoff["scan"]  <- list(63.1)
+cutoff["median"]  <- list(81.8)
+cutoff["average"]  <- list(87.1)
+cutoff["first_quartile"]  <- list(54.4)
+cutoff["last_quartile"]  <- list(109.9)
+cutoff["first_vs_last_quartile"]  <- list(23)
+cutoff["curtain"]  <- list(14)
+
+#i=names(cutoff)[7]
+for(i in names(cutoff)){
+  cut_off <- cutoff[[i]]
+  if(i=="first_vs_last_quartile" | i=="curtain"){
+    dat_remove_nd_sort[(cut_off+1):nrow(dat_remove_nd_sort),"C1GALT1"] <- "high"
+    dat_remove_nd_sort[1:cut_off,"C1GALT1"] <- "low"
+    cut_off <- dat_remove_nd_sort[cut_off,"C1GALT1_value"]
+  }else{
+    dat_remove_nd_sort[dat_remove_nd_sort$C1GALT1_value > cut_off,"C1GALT1"] <- "high"
+    dat_remove_nd_sort[dat_remove_nd_sort$C1GALT1_value <= cut_off,"C1GALT1"] <- "low"
+    dat_remove_nd_sort$C1GALT1 <- as.factor(dat_remove_nd_sort$C1GALT1)
+  }
+    
+  #Y = Surv(dat_remove_nd_sort$overall, dat_remove_nd_sort$status == "dead")
+  #kmfit = survfit(Y ~ dat_remove_nd_sort$C1GALT1)
+  #summary(kmfit, times = c(seq(0, 1000, by = 100)))
+  
+  fit_overall <- survfit(Surv(overall, status== "dead") ~ C1GALT1,
+                 data = dat_remove_nd_sort)
+
+  p1_overall <- ggsurvplot(fit_overall,
+                           legend.title = "",
+                           palette = c("darkred", "darkblue"),
+                           data = dat_remove_nd_sort, 
+                           risk.table = TRUE,
+                           pval = TRUE,
+                           surv.plot.height=0.85)+
+    xlab("Follow up in months")+
+    ylab("Overall survival probability")
+  
+  p2 <- ggplot(data=dat_remove_nd_sort,aes(x=id,y=C1GALT1_value,color=Event))+
+    geom_point()+
+    theme_classic()+
+    geom_vline(xintercept = sum(dat_remove_nd_sort$C1GALT1=="low"), color="gray")+
+    geom_hline(yintercept = cut_off, color="gray")+
+    ylab("Expression")+
+    xlab("sorted by expression")+
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          legend.position = "top")
+  
+  
+  #(p1$plot/p1$table)|p2
+  pdf(paste0("result/gse17679/gse17679_2plots_cutoff_method_",i,".overall.pdf"))
+    plot_layout(widths = c(2, 1), heights = c(1, 1))
+    print(p1_overall$plot + p2 +  plot_layout(widths = c(3, 1)))
+  dev.off()
+  
+  layout <- "
+  AAAAAACC
+  AAAAAACC
+  AAAAAACC
+  AAAAAACC
+  AAAAAACC
+  AAAAAACC
+  AAAAAACC
+  BBBBBBCC
+  "
+  
+  pdf(paste0("result/gse17679/gse17679_3plots_cutoff_method_",i,".overall.pdf"))
+    print(p1_overall$plot + p1_overall$table + p2 + 
+    plot_layout(design = layout))
+  dev.off()
+  
+  
+  fit_efs <- survfit(Surv(efs, status== "dead") ~ C1GALT1,
+                 data = dat_remove_nd_sort)
+  
+  p1_efs <- ggsurvplot(fit_efs,
+                       legend.title = "",
+                       data = dat_remove_nd_sort,
+                       palette = c("darkred", "darkblue"),
+                       risk.table = TRUE,
+                       pval = TRUE,
+                       surv.plot.height=0.85)+
+    xlab("Follow up in months")+
+    ylab("eventfree survival probability")
+  
+  #(p1$plot/p1$table)|p2
+  pdf(paste0("result/gse17679/gse17679_2plots_cutoff_method_",i,".eventfree.pdf"))
+    plot_layout(widths = c(2, 1), heights = c(1, 1))
+    print(p1_efs$plot + p2 +  plot_layout(widths = c(3, 1)))
+  dev.off()
+  pdf(paste0("result/gse17679/gse17679_3plots_cutoff_method_",i,".eventfree.pdf"))
+    print(p1_efs$plot + p1_efs$table + p2 + 
+    plot_layout(design = layout))
+  dev.off()
+}
+```
